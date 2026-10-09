@@ -30,21 +30,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .bound_layers import (
-    TensorPair,
-    initial_linf_bounds,
-    conv2d_interval,
-    linear_interval,
-    relu_interval_relaxation,
-)
-
-# from bound_layers import (
+# from .bound_layers import (
 #     TensorPair,
 #     initial_linf_bounds,
 #     conv2d_interval,
 #     linear_interval,
 #     relu_interval_relaxation,
 # )
+
+from bound_layers import (
+    TensorPair,
+    initial_linf_bounds,
+    conv2d_interval,
+    linear_interval,
+    relu_interval_relaxation,
+)
 
 
 @dataclass
