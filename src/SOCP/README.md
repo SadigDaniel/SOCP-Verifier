@@ -26,36 +26,35 @@ perturbations clipped to [0,1].
 
 ## MNIST experiment command
 
-This experiment evaluates a DeepPoly-trained MNIST CNN with training epsilon
-**0.1** and verification epsilon **0.15**. From `src/`:
+This experiment evaluates a CROWN-IBP-trained MNIST CNN with training epsilon
+**0.3** and verification epsilon **0.2**. From `src/`:
 
 ```bash
 nohup python -m SOCP.eval_SOCP_robustness \
-  --checkpoint ../checkpoints/eps_0.1/tmp_deeppoly_cnn.pt \
-  --model_type cnn --epsilon 0.15 \
-  --linear_size 100 --max_E 34 --max_S 32 --max_T 32 \
-  --prev_candidate_limit 128 --gamma_backend dual --max_targets 9 \
+  --checkpoint ../checkpoints/eps_0.3/crown_IBP_cnn_standard.pt \
+  --model_type cnn --epsilon 0.2 \
+  --linear_size 100 --max_E 16 --max_S 8 --max_T 8 \
+  --prev_candidate_limit 32 --gamma_backend dual --max_targets 9 \
   --solver_max_iters 500 \
-  > MNIST_tmp_deeppoly_cnn_train0.1_Val0.15_test2.out 2>&1 &
+  > MNIST_crown_IBP_cnn_train0.3_Val0.2.out 2>&1 &
 ```
 
 Monitor the output with:
 
 ```bash
-tail -f MNIST_tmp_deeppoly_cnn_train0.1_Val0.15_test2.out
+tail -f MNIST_crown_IBP_cnn_train0.3_Val0.2.out
 ```
 
-Provide `eps_0.1/tmp_deeppoly_cnn.pt` separately; it is not currently included.
-The included
+The command uses the included
 [`eps_0.3/crown_IBP_cnn_standard.pt`](../../checkpoints/eps_0.3/crown_IBP_cnn_standard.pt)
-belongs to another experiment.
+checkpoint.
 
 | Setting | Value |
 | --- | --- |
 | Architecture | `n1=16`, `n2=32` from CLI defaults; `linear_size=100`. |
-| Training / verification epsilon | 0.1 / 0.15. |
-| E/S/T budgets | `34 / 32 / 32` per hidden layer. |
-| Candidate budgets | `prev_candidate_limit=128`; `nodes_per_layer=8` from the CLI default. |
+| Training / verification epsilon | 0.3 / 0.2. |
+| E/S/T budgets | `16 / 8 / 8` per hidden layer. |
+| Candidate budgets | `prev_candidate_limit=32`; `nodes_per_layer=8` from the CLI default. |
 | Influence backend | `dual`, the CROWN-style backward calculation. |
 | Target coverage | `max_targets=9` checks all incorrect classes for a ten-class model. |
 | Solver | `SCS` from the CLI default, with an explicit 500-iteration limit. |

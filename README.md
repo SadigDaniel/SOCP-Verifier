@@ -119,9 +119,8 @@ in the SOCP README. Run Python from `src/`. The technical README includes
 architecture settings, the full argument reference, and legacy backend
 instructions.
 
-The example evaluates a DeepPoly checkpoint trained at epsilon 0.1 with a
-verification epsilon of 0.15. Its checkpoint must be provided separately.
-The included checkpoint is
+The example evaluates a CROWN-IBP checkpoint trained at epsilon 0.3 with a
+verification epsilon of 0.2. The checkpoint is included at
 [`checkpoints/eps_0.3/crown_IBP_cnn_standard.pt`](checkpoints/eps_0.3/crown_IBP_cnn_standard.pt).
 
 Both loaders in [`src/data.py`](src/data.py) use `ToTensor()` to produce
