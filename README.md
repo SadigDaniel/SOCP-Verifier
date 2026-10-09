@@ -1,295 +1,191 @@
 # SOCP Verifier
 
-Evaluate pretrained ReLU classifiers on **MNIST and CIFAR-10** with sparse
-second-order cone programming (SOCP) relaxations. The verifier constructs an
-input perturbation box, propagates activation bounds, selects sparse lifted
-products, and solves a target-versus-true logit margin problem with CVXPY.
+Sparse second-order cone programming (SOCP) verification for pretrained ReLU
+classifiers on **MNIST and CIFAR-10**.
 
-The evaluation entry point supports a MNIST MLP, a MNIST CNN, and a CIFAR-10
-CNN5. Experiment configurations are included, but pretrained checkpoints and
-datasets are intentionally omitted. Evaluation requires a compatible checkpoint;
-the included data loaders can download MNIST and CIFAR-10 when network access is
-available.
+## Research scope
 
+This project studies the tightness and computational cost of convex relaxations
+for adversarial robustness certification. Selected lifted products, McCormick
+envelopes, and small SOC constraints add coupling information to a scalar ReLU
+relaxation. The verifier bounds target-versus-true logit margins over an
+L-infinity perturbation region clipped to the valid image range.
 
-## Repository structure
+This release provides a CVXPY sparse SOCP evaluator for a MNIST MLP, a MNIST
+CNN, and a CIFAR-10 CNN5, together with the **Class-Optimized Robust Evaluation
+(CORE)** cascade API. CORE evaluates target classes through ordered verifier
+stages, stopping a class once a valid negative margin bound is obtained.
+Its API is separate from the SOCP evaluation entry point.
 
-The repository is organized as follows. Paths are relative to the repository
-root, and folder names are case-sensitive.
+Experiment logs and a saved checkpoint are included. The active evaluation
+path operates on pretrained models.
 
-| Folder | Purpose | Contents |
+[Method](#method-overview) · [Environment](#environment-setup) ·
+[Hardware](#experimental-hardware) · [Evaluation](#run-an-evaluation) ·
+[Results](#reported-results) · [Repository structure](#repository-structure)
+
+## Method overview
+
+The verifier starts with an input perturbation box, propagated interval bounds,
+affine layer equations, and the scalar convex hull of each ReLU. At hidden layer
+$k$, let $x$ denote the preceding layer's variables and $z$ the current ReLU
+activations. In the first hidden layer, $x$ is the perturbed image.
+
+| Coupling set | Selected product | Relationship |
 | --- | --- | --- |
-| [`configs/`](configs/) | Records of model and training experiment settings. | Nine YAML files for MNIST/CIFAR-10 LP, SOCP, and smoothing experiments. The evaluator takes CLI arguments and does not load these YAML files. |
-| [`scripts/`](scripts/) | Environment setup reference. | `create_env.sh`, containing Conda, PyTorch, utility, and conic-solver installation commands. See the setup note below before using it. |
-| [`src/`](src/) | Model definitions and shared bound routines. | `model.py`, `bound_layers.py`, `dual_bounds.py`, `deeppoly_bounds.py`, and the `SOCP/` package. |
-| [`src/SOCP/`](src/SOCP/) | Active verifier implementation and documentation. | Evaluation, certificates, bounds, influence scoring, coupling selection, conic solvers, utilities, `__init__.py`, `README.md`, and `FLOWCHART.md`. |
-| [`src/SOCP/Old_codes/`](src/SOCP/Old_codes/) | Archived implementations and training experiments. | An older certificate API, affine conversion helpers, and three loss modules. These are separate from the active evaluation path. |
+| $\mathcal{E}^{(k)}$ | $x_i z_j$ | Previous-to-current layer. |
+| $\mathcal{S}^{(k)}$ | $z_j z_{j'}$ | Two current-layer activations. |
+| $\mathcal{T}^{(k)}$ | $x_p x_q$ | Two previous-layer variables. |
 
-### Configuration files
+For each selected product $w\approx ab$, four **McCormick envelope**
+inequalities constrain the lift using the intervals of $a$ and $b$. Square
+lifts $d_a$ and $d_b$ are created only when needed and bounded by the square
+function and its interval secant. The **second-order cone** constraint
 
-| File(s) in `configs/` | Purpose |
-| --- | --- |
-| `mnist_lp.yaml` | MNIST CNN LP/dual training settings, regularizer settings, and smoothing options. |
-| `mnist_lp_new.yaml`, `mnist_lp_old.yaml` | Alternative MNIST LP experiment settings. |
-| `mnist_socp.yaml`, `mnist_socp_old.yaml` | SOCP-oriented training/loss settings, including model dimensions, solver/coupling budgets, and loss weights. |
-| `cifar_lp.yaml` | CIFAR-10 CNN5 training settings, including architecture, epsilon schedule, and bound method. |
-| `cifar_lp_crown.yaml` | CIFAR-10 CROWN-IBP training variant. |
-| `cifar_lp_dual_wk.yaml` | CIFAR-10 dual-WK training variant. |
-| `cifar_rgs_lp.yaml` | CIFAR-10 configuration containing randomized Gaussian smoothing options; inspect `use_rgs` for whether they are enabled. |
+$$
+\left\|\begin{bmatrix}2w \\ d_a-d_b\end{bmatrix}\right\|_2
+\leq d_a+d_b
+$$
 
-Training entry points are not included in this repository. These configurations
-provide experiment context; a filename does not automatically select the
-evaluator's model type or gamma backend.
+enforces positive semidefiniteness of the corresponding $2\times2$ lifted
+block. The active solver also links selected $\mathcal{E}$ products to
+activation-square lifts through the affine weights and bias, with interval
+residuals covering omitted products. These constraints strengthen the ReLU
+relaxation while retaining a convex SOCP formulation with sparse lifts.
 
-### Source files
+```mermaid
+flowchart TD
+    B["Input box and propagated bounds"]
+    H["Affine equations and ReLU hulls"]
+    L["Select E / S / T and create lifts"]
+    C["McCormick envelopes, SOC minors, and residual links"]
+    M["SOCP target-margin maximization"]
+    B --> H
+    B --> L
+    L --> C
+    H --> M
+    C --> M
+```
 
-| File | Role |
-| --- | --- |
-| [`src/model.py`](src/model.py) | Builds the MNIST CNN, MNIST tiny MLP, and pooling-free CIFAR-10 CNN5. |
-| [`src/bound_layers.py`](src/bound_layers.py) | Input-box bounds and interval propagation through convolution, linear, and ReLU layers. Required by verification. |
-| [`src/dual_bounds.py`](src/dual_bounds.py) | Bound records and CROWN-style/Wong–Kolter backward routines reused by the verifier. Required even though these routines also support training. |
-| [`src/deeppoly_bounds.py`](src/deeppoly_bounds.py) | Additional DeepPoly bound routines. The active SOCP evaluator does not import this file. |
+*Figure 1. Scalar ReLU constraints and sparse product constraints are combined
+in one convex program for each input and target class.*
 
-| File in `src/SOCP/` | Role |
-| --- | --- |
-| `eval_SOCP_robustness.py` | Loads a dataset/checkpoint, evaluates the test subset, and reports metrics. |
-| `socp_certificate.py` | Builds each sample's certificate and orchestrates target-class solves. |
-| `socp_bounds.py` | Collects input, pre-activation, ReLU activation, and final-logit intervals. |
-| `socp_influence.py` | Computes CROWN-style, dual-WK, or clean-gradient influence scores. |
-| `socp_relaxation.py` | Selects sparse cross-layer (E), current-layer (S), and previous-layer (T) products. |
-| `socp_solver.py` | Constructs the CVXPY SOCP relaxation and maximizes a target-versus-true margin. |
-| `socp_solver_old.py` | Legacy solver available as a fallback for slow runs. |
-| `socp_relaxation_old.py` | Legacy coupling-selector companion; currently identical to `socp_relaxation.py`. |
-| `utils.py` | Device/seed helpers and conversion of supported model layers to dense affine matrices. |
-| `__init__.py` | Python package marker. |
-| `README.md` | Module-level notes from the earlier source-bundle review. Its attachment-era missing-file inventory is outdated; use this root README for the current repository inventory. |
-| [`FLOWCHART.md`](src/SOCP/FLOWCHART.md) | Additional verifier pipeline and coupling-selection documentation. |
-
-| File in `src/SOCP/Old_codes/` | Role |
-| --- | --- |
-| `socp_certificate_old.py` | Archived certificate orchestration. |
-| `conv_to_dense_affines.py` | Older convolution-to-affine and linear-bound helpers. |
-| `socp_cvxpy_layer_loss_cnn.py` | Differentiable CNN-head loss experiment using `cvxpylayers`. |
-| `socp_diff_loss.py` | Unrolled adversarial-margin training surrogate; not a certified SOCP bound. |
-| `socp_loss.py` | Training/logging loss wrapper around detached CVXPY certificate values. |
-
-## Models and input domain
-
-| CLI model type | Dataset/input shape | Builder |
-| --- | --- | --- |
-| `tiny` | MNIST, `1 × 28 × 28` | `build_mnist_tiny_model(n1, n2, linear_size)`: three linear layers with two hidden ReLUs; `linear_size` is unused. |
-| `cnn` | MNIST, `1 × 28 × 28` | `build_mnist_model(n1, n2, linear_size)`: two convolution blocks and a hidden linear layer. |
-| `cifar10` | CIFAR-10, `3 × 32 × 32` | `build_cnn5_model(c1, c2, c3, linear_size)`: five convolutions and two linear layers. CLI `n1/n2/n3` map to `c1/c2/c3`. |
-
-The active conversion/bound routines support sequential models built from
-`Conv2d`, `Linear`, `ReLU`, and flatten layers. They do not support arbitrary
-PyTorch architectures or pooling layers.
-
-The perturbation domain is an L-infinity ball clipped to **[0, 1]**:
-`clamp(x - epsilon, 0, 1) <= x' <= clamp(x + epsilon, 0, 1)`.
-Inputs and checkpoint preprocessing must match this domain. Mean/std-normalized
-inputs require corresponding changes to the bounds. The missing loader prevents
-verification of the current dataset preprocessing.
+The objective maximizes $f_t(x')-f_y(x')$ over the relaxation. Full multiclass
+certification requires valid negative upper bounds for every incorrect class.
+See [result interpretation](src/SOCP/README.md#evaluation-behavior-and-metrics).
 
 ## Environment setup
 
-Python 3.11 matches the environment specified in the supplied setup reference.
-Install the evaluation dependencies in an environment suitable for your hardware:
+The package reference is [`scripts/create_env.sh`](scripts/create_env.sh).
 
 ```bash
-conda create -n socp-verifier python=3.11 -y
-conda activate socp-verifier
-python -m pip install torch torchvision numpy tqdm cvxpy scs clarabel
+conda create -n lp-mnist python=3.11 -y
+conda activate lp-mnist
+python -m pip install --upgrade pip
+python -m pip install torch torchvision torchaudio
+python -m pip install numpy pyyaml tqdm matplotlib cvxpy scs clarabel
 ```
 
-Use a PyTorch build compatible with your hardware if you need CUDA. The evaluator
-uses CUDA for PyTorch operations when available, while SCS/Clarabel perform the
-conic solves on the CPU.
-
-**Setup script status:** `scripts/create_env.sh` contains a malformed shebang
-and uncommented explanatory text, including `Recommended:` and `GPU Version:`.
-Treat it as an installation reference until those lines are corrected. The
-archived CNN loss additionally needs `cvxpylayers`; evaluation does not.
-
-## Integration requirements
-
-The following must be resolved for a fresh checkout to run:
-
-1. **Provide a compatible checkpoint.** Model weights are not distributed.
-   Architecture arguments and preprocessing must match the supplied checkpoint
-   and the verifier's [0, 1] input domain.
-2. **Align shared-module imports with the launch layout.** The examples run
-   from `src/`, where the evaluator imports `model`, `data`, and
-   `dual_bounds` as top-level modules. However, `dual_bounds.py` uses
-   `from .bound_layers import ...`, which fails in that layout.
-   `socp_bounds.py` first tries the absent `SOCP.dual_bounds`, then falls back
-   to top-level `dual_bounds`; both branches in `socp_influence.py` also
-   import top-level `dual_bounds`. A consistent `src/` launch layout should
-   use top-level `bound_layers` and `dual_bounds` imports in those modules.
-   Alternatively, convert the entry point and its dependencies together to a
-   consistent `src` package layout.
-3. **Provide dataset access.** `src/data.py` uses torchvision to download MNIST
-   or CIFAR-10 under the chosen `--data_dir`. Pre-populate that location when
-   evaluation must run without network access.
-
-Model builders, interval helpers, both legacy backend files, and experiment
-configurations are present. Model weights and datasets are not distributed.
-
-## Evaluate a checkpoint
-
-After resolving the integration requirements, run evaluation from `src/`:
+For the CUDA 12.4 PyTorch wheel installation recorded in the setup reference,
+use this command for the PyTorch installation step:
 
 ```bash
-cd src
+python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 ```
 
-Architecture dimensions must match the saved state dictionary. The evaluator
-accepts either a state dictionary directly or a dictionary containing it under
-the `model` key. Replace the placeholder paths below with compatible checkpoints.
+The evaluator uses PyTorch, torchvision, NumPy, tqdm, CVXPY, SCS, and Clarabel.
+The other utility packages are included in the setup reference. Archived
+differentiable loss experiments additionally use `cvxpylayers` and `diffcp`.
 
-### MNIST CNN
+The setup reference selects Python 3.11 but does not pin other package versions.
+Record installed versions with `python -m pip freeze` when reproducing a run.
+PyTorch operations use CUDA when available; SCS and Clarabel solve on the CPU.
 
-```bash
-python -m SOCP.eval_SOCP_robustness \
-  --checkpoint /path/to/mnist_checkpoint.pt \
-  --data_dir ../data --model_type cnn \
-  --n1 16 --n2 32 --linear_size 100 --epsilon 0.3 \
-  --max_E 8 --max_S 4 --max_T 4 --prev_candidate_limit 32 \
-  --gamma_backend dual --all_classes \
-  --solver SCS --solver_max_iters 200
-```
+## Experimental hardware
 
-For the tiny MNIST checkpoint, use `--model_type tiny` and set `--n1` and
-`--n2` to its hidden widths. The CLI defaults differ from the tiny builder's
-defaults, so pass the widths explicitly.
+SOCP and Alpha-Beta-CROWN evaluations used the same machine:
 
-### CIFAR-10 CNN5
-
-```bash
-python -m SOCP.eval_SOCP_robustness \
-  --checkpoint /path/to/cifar10_checkpoint.pt \
-  --data_dir ../data --model_type cifar10 \
-  --n1 24 --n2 48 --n3 96 --linear_size 192 --epsilon 0.0088889 \
-  --max_E 8 --max_S 4 --max_T 4 --prev_candidate_limit 16 \
-  --gamma_backend dual --all_classes \
-  --solver SCS --solver_max_iters 200
-```
-
-These are Bash commands; in PowerShell, place each evaluation command on one
-line or replace the continuation backslashes with PowerShell backticks.
-
-### Evaluation options
-
-| Option | CLI default | Meaning |
-| --- | --- | --- |
-| `--checkpoint` | Required | Saved weights to evaluate. |
-| `--data_dir` | `../data` | Dataset location, relative to the working directory. |
-| `--model_type` | `tiny` | `tiny`/`cnn` select MNIST; `cifar10` selects CIFAR-10. |
-| `--n1`, `--n2`, `--n3` | `16`, `32`, `96` | Architecture widths; `n3` is used only for CIFAR-10. |
-| `--linear_size` | `100` | Hidden classifier width for CNN models. |
-| `--epsilon` | Required | L-infinity radius in the model's input units. |
-| `--nodes_per_layer` | `8` | Retained neuron-candidate budget per hidden layer. |
-| `--max_E`, `--max_S`, `--max_T` | `8`, `6`, `6` | Per-layer coupling budgets for cross-layer, current-layer, and previous-layer products. |
-| `--prev_candidate_limit` | `16` | Previous-layer candidates considered when scoring pairs. |
-| `--gamma_backend` | `dual` | CROWN-style `dual`, fixed-alpha Wong–Kolter `dual_WK`, or clean-gradient `clean` influence scores. |
-| `--solver` | `SCS` | Conic solver; `CLARABEL` is also handled explicitly. |
-| `--solver_max_iters` | `200` | Iteration limit, not a wall-clock timeout. |
-| `--solver_verbose` | Off | Print solver diagnostics. |
-| `--all_classes` | Off | Check all nine incorrect classes for these ten-class models. |
-| `--max_targets` | `4` | Top incorrect classes by clean logits when `--all_classes` is absent. |
-| `--test_batch_size` | `9` | Loader batch size; each SOCP certificate still handles one image. |
-
-These are evaluator defaults. Direct calls to `CertificateConfig` have
-different defaults.
-
-## Evaluation behavior and reported results
-
-The evaluator processes exactly the first **200 test images** for either
-dataset. It raises an error if the loader provides fewer images. Some source
-comments/help strings still say “100” or “MNIST”; the executed limit is 200 and
-`--model_type cifar10` selects CIFAR-10.
-
-Cleanly misclassified images count as uncertified and skip the SOCP solve.
-For each cleanly correct image, the verifier maximizes
-`f_target(x') - f_true(x')` over the relaxation for each requested target.
-A negative, accurately solved upper bound for every incorrect class is the
-intended full multiclass robustness criterion.
-
-The printed results include clean accuracy, certified accuracy, certification
-rate among cleanly correct images, average worst margin, average certificate
-time, variable/constraint counts, and solver statuses. Certificate time covers
-the complete `certify_sample` call, including dense conversion and all targets.
-
-**Interpretation of the current implementation:**
-
-- Use `--all_classes` for full target coverage. The default four targets give
-  only a partial-target result.
-- The `certified` property checks only whether the largest returned margin is
-  negative; it does not enforce an `optimal` solver status or full target
-  coverage. Inspect numerical convergence and statuses before treating this
-  flag as a validated certificate.
-- On a solver exception, both solver versions retry with SCS at 500 iterations.
-  The result's `solver` field retains the originally requested solver name.
-- There is no PGD pre-check in this evaluation entry point.
-
-## Slow CIFAR-10 runs: legacy backend
-
-**If the code is running slowly on CIFAR-10, you can use
-`socp_solver_old.py` and `socp_relaxation_old.py`.**
-
-Both files are included under `src/SOCP/`. There is no CLI backend selector:
-the certificate API imports the active names `socp_solver.py` and
-`socp_relaxation.py`. Back up those active files and copy the legacy pair to
-the active names before starting a new Python process.
-
-From the repository root, in Bash:
-
-```bash
-mkdir -p .socp_backend_backup
-cp -n src/SOCP/socp_solver.py .socp_backend_backup/socp_solver.py
-cp -n src/SOCP/socp_relaxation.py .socp_backend_backup/socp_relaxation.py
-cp src/SOCP/socp_solver_old.py src/SOCP/socp_solver.py
-cp src/SOCP/socp_relaxation_old.py src/SOCP/socp_relaxation.py
-```
-
-Restart Python, return to `src/`, and rerun the evaluation command. Restore the
-backed-up active implementation from the repository root with:
-
-```bash
-cp .socp_backend_backup/socp_solver.py src/SOCP/socp_solver.py
-cp .socp_backend_backup/socp_relaxation.py src/SOCP/socp_relaxation.py
-```
-
-Keep the backup for the code version you are evaluating; refresh it deliberately
-after changing the active implementation. The legacy selector is currently
-identical to the active selector. The legacy solver omits the active solver's
-residual constraints linking selected E products to activation squares, so this
-switch changes the relaxation and may weaken the resulting bounds. A speedup
-is not guaranteed or benchmarked here.
-
-Both backends use dense convolution matrices, rebuilt for every sample.
-CIFAR-10 can therefore remain expensive in memory, conversion time, and CVXPY
-problem construction. Smaller coupling/candidate budgets can reduce work.
-Reducing target coverage speeds up exploration but yields partial-target results.
-Record the backend, budgets, solver settings, and evaluated subset when comparing
-experiments.
-
-## Files optional for a verification-only distribution
-
-| Item | Recommendation |
+| Component | Specification |
 | --- | --- |
-| `src/SOCP/Old_codes/` | Archive or omit if only active checkpoint evaluation is required. Its loss modules are training experiments, and some archived imports still refer to their former locations. |
-| `configs/` | Keep for experiment provenance; the evaluator does not require training configurations. |
-| `src/deeppoly_bounds.py` | Optional for this evaluator, including when evaluating a DeepPoly-trained checkpoint. The checkpoint's training method does not select a DeepPoly verification backend. |
-| `socp_solver_old.py`, `socp_relaxation_old.py` | Keep to preserve the documented legacy fallback. |
-| `FLOWCHART.md` and module README | Optional runtime documentation. |
+| GPU | NVIDIA TITAN Xp |
+| GPU memory | 12 GiB |
+| System RAM | 15 GiB |
 
-Retain `model.py`, `bound_layers.py`, `dual_bounds.py`, and all active verifier
-modules. In particular, the shared bound files are verification dependencies,
-even though their comments also discuss training. Checkpoints and dataset files
-are intentionally excluded from this distribution.
+## Run an evaluation
 
-## Repository scope
+Follow the [MNIST experiment command](src/SOCP/README.md#mnist-experiment-command)
+in the SOCP README. Run Python from `src/`. The technical README includes
+architecture settings, the full argument reference, and legacy backend
+instructions.
 
-This repository contains verifier code, configuration records, and archived
-loss experiments. It does not contain pretrained weights or dataset files.
+The example evaluates a DeepPoly checkpoint trained at epsilon 0.1 with a
+verification epsilon of 0.15. Its checkpoint must be provided separately.
+The included checkpoint is
+[`checkpoints/eps_0.3/crown_IBP_cnn_standard.pt`](checkpoints/eps_0.3/crown_IBP_cnn_standard.pt).
+
+Both loaders in [`src/data.py`](src/data.py) use `ToTensor()` to produce
+floating-point inputs in **[0,1]**, without mean/std normalization.
+The input box is
+`clamp(x - epsilon, 0, 1) <= x' <= clamp(x + epsilon, 0, 1)`.
+Checkpoint preprocessing must match this domain.
+
+## Reported results
+
+Accuracy values are percentages. Training method identifies how the checkpoint
+was trained. SOCP-cert and Alpha-Beta-CROWN report certified robust accuracy;
+PGD reports empirical robust accuracy, an upper bound on true robust accuracy.
+Training and verification perturbation budgets are shown separately.
+
+| Dataset | Training method | $\varepsilon_{\mathrm{train}}$ | $\varepsilon_{\mathrm{verify}}$ | Clean | SOCP-cert | $\alpha,\beta$-CROWN | PGD |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| MNIST | IBP | 0.1 | 0.1 | 99.00 | 88.33 | 87.33 | 88.67 |
+| MNIST | CROWN-IBP | 0.1 | 0.1 | 97.67 | 94.33 | 93.67 | 94.67 |
+| MNIST | DeepPoly | 0.1 | 0.1 | 98.00 | 94.67 | 93.33 | 94.67 |
+| MNIST | Dual-WK | 0.1 | 0.1 | 82.00 | 69.67 | 70.00 | 72.33 |
+| MNIST | CROWN-IBP | 0.1 | 0.15 | 97.67 | 8.00 | N/A | 32.00 |
+| MNIST | DeepPoly | 0.1 | 0.15 | 98.00 | 7.33 | N/A | 34.33 |
+| MNIST | IBP | 0.3 | 0.3 | 99.00 | 71.67 | 70.33 | 78.33 |
+| MNIST | CROWN-IBP | 0.3 | 0.3 | 97.67 | 83.33 | 83.33 | 85.67 |
+| MNIST | DeepPoly | 0.3 | 0.3 | 98.00 | 82.33 | 82.00 | 85.67 |
+| MNIST | Dual-WK | 0.3 | 0.3 | 82.00 | 51.00 | 48.33 | 51.33 |
+| CIFAR-10 | CROWN-IBP | 2/255 | 1/255 | 54.00 | 50.00 | 49.00 | 51.00 |
+| CIFAR-10 | DeepPoly | 2/255 | 1/255 | 59.50 | 49.00 | 49.00 | 51.00 |
+| CIFAR-10 | Dual-WK | 2/255 | 1/255 | 42.00 | 38.50 | 38.00 | 39.00 |
+| CIFAR-10 | CROWN-IBP | 2/255 | 2/255 | 54.00 | 39.50 | 39.50 | 39.50 |
+| CIFAR-10 | DeepPoly | 2/255 | 2/255 | 59.50 | 36.50 | 35.50 | 38.00 |
+| CIFAR-10 | Dual-WK | 2/255 | 2/255 | 42.00 | 29.00 | 28.50 | 31.50 |
+
+**N/A** indicates that Alpha-Beta-CROWN did not complete the corresponding
+evaluation because of the available memory budget.
+
+### Additional MNIST results
+
+| Dataset | Training method | $\varepsilon_{\mathrm{train}}$ | $\varepsilon_{\mathrm{verify}}$ | Clean | SOCP-cert | $\alpha,\beta$-CROWN | PGD |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| MNIST | IBP | 0.3 | 0.2 | 99.00 | 83.33 | 81.67 | 86.00 |
+| MNIST | CROWN-IBP | 0.3 | 0.2 | 97.67 | 88.33 | 87.33 | 90.00 |
+| MNIST | DeepPoly | 0.3 | 0.2 | 98.00 | 88.00 | 86.67 | 90.33 |
+| MNIST | Dual-WK | 0.3 | 0.2 | 82.00 | 61.67 | 61.00 | 62.67 |
+
+## Repository structure
+
+| Path | Purpose and contents |
+| --- | --- |
+| [`Results/`](Results/) | [MNIST SOCP outputs](Results/MNIST_Train_0.3/) and an [AB-CROWN comparison log](Results/AB_Crown%20Results/). |
+| [`checkpoints/`](checkpoints/) | Saved model weights, including [`eps_0.3/crown_IBP_cnn_standard.pt`](checkpoints/eps_0.3/crown_IBP_cnn_standard.pt). |
+| [`scripts/`](scripts/) | [`create_env.sh`](scripts/create_env.sh), the environment setup reference. |
+| [`src/`](src/) | Shared [model builders](src/model.py), [dataset loaders and preprocessing](src/data.py), and bound routines. |
+| [`src/SOCP/`](src/SOCP/) | Sparse SOCP verification, certificates, influence scoring, coupling selection, and conic solvers. See the [technical README](src/SOCP/README.md). |
+| [`src/CORE/`](src/CORE/) | Class-wise verifier cascade, interfaces, result types, and adapters. See the [CORE README](src/CORE/README.md). |
+
+## Limitations
+
+- The conversion path supports sequential convolution, linear, ReLU, and
+  flatten layers.
+- The current `certified` flag checks returned margin signs without enforcing
+  solver status or complete target coverage. Full multiclass results require
+  all incorrect classes and numerical validation; see the
+  [interpretation notes](src/SOCP/README.md#evaluation-behavior-and-metrics).
+- Dense convolution conversion and CVXPY construction can be expensive.
+  [Legacy backend instructions](src/SOCP/README.md#legacy-backend-and-performance)
+  describe the fallback and its effect on the relaxation.
