@@ -17,7 +17,7 @@ from model import build_mnist_model, build_mnist_tiny_model, build_cnn5_model
             python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/tmp_IBP_tiny.pt --model_type tiny --epsilon 0.1 --max_E 8 --max_S 4 --max_T 4 --prev_candidate_limit 16
             python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/eps_0.3/ibp_cnn_standard.pt --model_type cnn --epsilon 0.3 --max_E 8 --max_S 4 --max_T 4 --prev_candidate_limit 32 --gamma_backend dual --max_targets 8
             
-            nohup python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/eps_0.1/tmp_deeppoly_cnn.pt --model_type cnn --epsilon 0.145\
+            nohup python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/eps_0.3/crown_IBP_cnn_standard.pt --model_type cnn --epsilon 0.2\
                                                     --linear_size 100 --max_E 16 --max_S 8 --max_T 8\
                                                     --prev_candidate_limit 32 --gamma_backend dual --max_targets 9\
                                                     > MNIST_tmp_deeppoly_cnn_train0.1_Val0.15.out 2>&1 &
