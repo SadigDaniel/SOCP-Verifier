@@ -107,6 +107,7 @@ SOCP and Alpha-Beta-CROWN evaluations used the same machine:
 
 | Component | Specification |
 | --- | --- |
+| CPU | Intel Xeon W-2133 @ 3.60 GHz; 6 cores, 12 threads, 1 socket |
 | GPU | NVIDIA TITAN Xp |
 | GPU memory | 12 GiB |
 | System RAM | 15 GiB |
