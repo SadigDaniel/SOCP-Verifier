@@ -63,6 +63,8 @@ def select_sparse_couplings(
     max_S: int,
     max_T: int,
     prev_candidate_limit: int = 128,
+    *,
+    connected_e_candidates: bool = True,
 ) -> SOCPPattern:
     """
     Select sparse SOCP coupling sets E, S, and T layer-by-layer.
@@ -70,6 +72,9 @@ def select_sparse_couplings(
     The first hidden layer couples input variables x_i to first-layer ReLU
     activations z_j.  Later layers couple previous hidden activations z^(k-1)
     to current hidden activations z^(k).
+
+    By default E scores each retained unstable neuron's nonzero parent weights.
+    The previous-activation shortlist is used for T and for legacy E selection.
     """
     per_layer: List[CouplingSets] = []
 
@@ -90,18 +95,18 @@ def select_sparse_couplings(
         prev_width = np.maximum(prev_u - prev_l, 0.0)
         current_u = np.maximum(hb.z_upper, 0.0)
 
-        # To avoid scoring millions of previous-layer variables, restrict to the
-        # largest-width previous variables first.
+        # Shortlist the largest-width previous variables for T.
         prev_candidates = _topk_indices(prev_width, min(prev_candidate_limit, prev_width.size))
 
         # E^(k): cross-layer products z_prev_i * z_current_j.
         E_scores: List[Tuple[float, int, int]] = []
-        for j in retained:
-            row = np.abs(W[j, prev_candidates])
-            scores = gamma[j] * row * prev_width[prev_candidates] * max(current_u[j], 0.0)
-            for local_idx, score in enumerate(scores):
-                if np.isfinite(score) and score > 0:
-                    E_scores.append((float(score), int(prev_candidates[local_idx]), int(j)))
+        if max_E > 0:
+            e_nodes = retained[unstable[retained]] if connected_e_candidates else retained
+            for j in e_nodes:
+                parents = np.flatnonzero(W[j]) if connected_e_candidates else prev_candidates
+                scores = gamma[j] * np.abs(W[j, parents]) * prev_width[parents] * current_u[j]
+                eligible = np.flatnonzero(np.isfinite(scores) & (scores > 0))
+                E_scores.extend((float(scores[i]), int(parents[i]), int(j)) for i in eligible)
         E_scores.sort(reverse=True, key=lambda t: t[0])
         E = [(i, j) for _, i, j in E_scores[:max_E]]
 

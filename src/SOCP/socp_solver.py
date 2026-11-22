@@ -23,6 +23,7 @@ or implicit differentiation around this same problem structure.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import fsum
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -133,42 +134,15 @@ def _add_soc_minor(offdiag, diag_a, diag_b, constraints: list) -> None:
     constraints.append(cp.SOC(diag_a + diag_b, cp.hstack([2.0 * offdiag, diag_a - diag_b])))
 
 
-def _omitted_residual_bounds(
-    weights: np.ndarray,
-    prev_lower: np.ndarray,
-    prev_upper: np.ndarray,
-    curr_lower: float,
-    curr_upper: float,
-    selected_indices: Sequence[int],
+def _affine_interval(
+    weights: np.ndarray, lower: np.ndarray, upper: np.ndarray,
 ) -> Tuple[float, float]:
-    """Bound sum_{i not in E_j} weights[i] * z_prev[i] * z_curr[j].
-
-    Take all four corners of each product interval. This works for the input
-    layer (where input bounds can have either sign) and later ReLU layers.
-    The interval sum does not assume that omitted products are independent;
-    summing their individual bounds remains a valid outer bound.
-    """
-    omitted = np.ones(weights.size, dtype=bool)
-    omitted[list(selected_indices)] = False
-    if not np.any(omitted):
-        return 0.0, 0.0
-
-    lower = prev_lower[omitted]
-    upper = prev_upper[omitted]
-    w = weights[omitted]
-    products = np.stack(
-        (
-            lower * curr_lower,
-            lower * curr_upper,
-            upper * curr_lower,
-            upper * curr_upper,
-        )
-    )
-    product_lower = np.min(products, axis=0)
-    product_upper = np.max(products, axis=0)
-    residual_lower = np.minimum(w * product_lower, w * product_upper).sum()
-    residual_upper = np.maximum(w * product_lower, w * product_upper).sum()
-    return float(residual_lower), float(residual_upper)
+    """Enclose a signed weighted sum over the parent activation boxes."""
+    lower_products = weights * lower
+    upper_products = weights * upper
+    low = fsum(np.nextafter(np.minimum(lower_products, upper_products), -np.inf))
+    high = fsum(np.nextafter(np.maximum(lower_products, upper_products), np.inf))
+    return float(np.nextafter(low, -np.inf)), float(np.nextafter(high, np.inf))
 
 
 class SparseSOCPVerifier:
@@ -360,26 +334,32 @@ class SparseSOCPVerifier:
                 dq = get_square(f"z{k-1}", prev_z, prev_l, prev_u, q)
                 _add_soc_minor(tau, dp, dq, constraints)
 
-            # For neurons with selected E edges, link their activation square
-            # to the affine weights. Each omitted product is conservatively
-            # covered by the residual interval. Skipping neurons without E
-            # edges avoids a square cone for every CNN activation while
-            # preserving a sound, sparse (but weaker) outer relaxation.
-            # Eliminating r_j gives two equivalent linear inequalities.
-            for j in sorted(selected_by_neuron):
+            # Use z_j^2 = z_j (W_j @ prev_z + b_j). Represent the omitted
+            # parents with one product of their weighted sum and z_j.
+            for j, selected in sorted(selected_by_neuron.items()):
                 zeta = get_square(f"z{k}", curr_z, curr_l, curr_u, j)
-                selected = selected_by_neuron.get(j, [])
                 selected_sum = sum(float(A[j, i]) * eta for i, eta in selected)
-                residual_lower, residual_upper = _omitted_residual_bounds(
-                    weights=A[j],
-                    prev_lower=prev_l,
-                    prev_upper=prev_u,
-                    curr_lower=float(curr_l[j]),
-                    curr_upper=float(curr_u[j]),
-                    selected_indices=[i for i, _ in selected],
-                )
                 residual = zeta - selected_sum - float(b[j]) * curr_z[j]
-                constraints += [residual >= residual_lower, residual <= residual_upper]
+
+                omitted = A[j] != 0.0
+                omitted[[i for i, _ in selected]] = False
+                if not np.any(omitted):
+                    constraints.append(residual == 0.0)
+                    continue
+
+                weights = A[j, omitted]
+                q_lower, q_upper = _affine_interval(weights, prev_l[omitted], prev_u[omitted])
+                omitted_product = _add_mccormick(
+                    name=f"res_L{k}_{j}",
+                    a=weights @ prev_z[omitted],
+                    b=curr_z[j],
+                    la=q_lower,
+                    ua=q_upper,
+                    lb=float(curr_l[j]),
+                    ub=float(curr_u[j]),
+                    constraints=constraints,
+                )
+                constraints.append(residual == omitted_product)
 
         objective = cp.Maximize(logits[target_class] - logits[true_class])
         problem = cp.Problem(objective, constraints)
