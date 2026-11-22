@@ -7,7 +7,6 @@ import torch
 from tqdm import tqdm
 
 from SOCP.socp_certificate import CertificateConfig, certify_sample
-from SOCP.utils import get_device
 from data import get_mnist_loaders, get_cifar10_loaders
 from model import build_mnist_model, build_mnist_tiny_model, build_cnn5_model
 
@@ -206,8 +205,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_T", type=int, default=6)
     parser.add_argument("--prev_candidate_limit", type=int, default=16)
 
-    parser.add_argument("--solver", type=str, default="SCS") #SCS CLARABEL
-    parser.add_argument("--solver_max_iters", type=int, default=200)
+    parser.add_argument(
+        "--solver_device", choices=("cpu", "gpu"), default="cpu",
+        help="Run on CPU with CVXPY or on CUDA with the PyTorch SOCP solver.",
+    )
+    parser.add_argument(
+        "--solver", type=str, default="SCS",
+        help="CVXPY solver for CPU mode, such as SCS or CLARABEL.",
+    )
+    parser.add_argument(
+        "--solver_max_iters", type=int,
+        help="Conic solver iteration limit (defaults to 200 on CPU and 2000 on GPU).",
+    )
     parser.add_argument("--solver_verbose", action="store_true")
 
     parser.add_argument(
@@ -239,7 +248,21 @@ def main() -> None:
     if args.max_targets < 1:
         raise ValueError("--max_targets must be at least 1.")
 
-    device = get_device()
+    match args.solver_device:
+        case "cpu":
+            device = torch.device("cpu")
+            default_max_iters = 200
+        case "gpu":
+            if not torch.cuda.is_available():
+                raise RuntimeError("--solver_device gpu requires an available CUDA device.")
+            device = torch.device("cuda")
+            default_max_iters = 2000
+
+    solver_max_iters = args.solver_max_iters
+    if solver_max_iters is None:
+        solver_max_iters = default_max_iters
+    if solver_max_iters < 1:
+        raise ValueError("--solver_max_iters must be at least 1.")
     print(f"Using device: {device}")
     print(f"Evaluating exactly the first {MAX_TEST_IMAGES} test images.")
 
@@ -324,11 +347,12 @@ def main() -> None:
         max_T=args.max_T,
         prev_candidate_limit=args.prev_candidate_limit,
         solver=args.solver,
-        solver_max_iters=args.solver_max_iters,
+        solver_max_iters=solver_max_iters,
         solver_verbose=args.solver_verbose,
         all_classes=args.all_classes,
         max_targets=args.max_targets,
         gamma_backend=args.gamma_backend,
+        solver_device=args.solver_device,
     )
 
     evaluate_socp_full(

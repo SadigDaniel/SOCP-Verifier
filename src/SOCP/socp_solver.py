@@ -1,5 +1,5 @@
 """
-Exact sparse SOCP certificate construction using CVXPY.
+Sparse SOCP certificate construction for CPU and GPU solvers.
 
 This file builds the mathematical relaxation from the paper:
 
@@ -182,9 +182,26 @@ class SparseSOCPVerifier:
     over the structured SOCP relaxation.  The returned value is phi_SOCP.
     """
 
-    def __init__(self, solver: str = "CLARABEL", verbose: bool = False, max_iters: int = 500):
-        if cp is None:
+    def __init__(
+        self,
+        solver: str = "CLARABEL",
+        verbose: bool = False,
+        max_iters: int = 500,
+        *,
+        solver_device: str = "cpu",
+        device=None,
+    ):
+        if solver_device not in ("cpu", "gpu"):
+            raise ValueError("solver_device must be 'cpu' or 'gpu'.")
+        if solver_device == "cpu" and cp is None:
             raise ImportError("cvxpy is required. Install with: pip install cvxpy clarabel scs")
+        if solver_device == "gpu":
+            import torch
+
+            self.device = torch.device("cuda" if device is None else device)
+            if self.device.type != "cuda" or not torch.cuda.is_available():
+                raise RuntimeError("The GPU SOCP solver requires an available CUDA device.")
+        self.solver_device = solver_device
         self.solver = solver
         self.verbose = verbose
         self.max_iters = max_iters
@@ -200,6 +217,39 @@ class SparseSOCPVerifier:
         target_class: int,
     ) -> SOCPResult:
         """Build and solve one target-vs-true SOCP margin problem."""
+        args = (affines, input_lower, input_upper, hidden_bounds, pattern, true_class, target_class)
+        match self.solver_device:
+            case "cpu":
+                return self._solve_cpu_margin(*args)
+            case "gpu":
+                return self._solve_gpu_margin(*args)
+
+    def _solve_gpu_margin(
+        self, affines, input_lower, input_upper, hidden_bounds, pattern, true_class, target_class,
+    ) -> SOCPResult:
+        from SOCP.socp_cuda import build_margin_problem
+
+        problem, objective = build_margin_problem(
+            affines, input_lower, input_upper, hidden_bounds, pattern,
+            true_class, target_class, self.device,
+        )
+        result = problem.solve(objective, iterations=self.max_iters)
+        value = float(result.upper_bound.item())
+        if self.verbose:
+            print(f"[SOCP] GPU target={target_class}, upper bound={value:.8g}")
+        return SOCPResult(
+            status="bounded" if np.isfinite(value) else "no_finite_bound",
+            value=value,
+            target_class=target_class,
+            true_class=true_class,
+            solver="TORCH_CUDA",
+            num_variables=problem.n,
+            num_constraints=problem.m,
+        )
+
+    def _solve_cpu_margin(
+        self, affines, input_lower, input_upper, hidden_bounds, pattern, true_class, target_class,
+    ) -> SOCPResult:
         constraints = []
         square_lifts: Dict[Tuple[str, int], object] = {}
 

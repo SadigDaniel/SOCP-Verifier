@@ -43,6 +43,7 @@ class CertificateConfig:
     # Recommended for the paper: "dual_WK".
     # Ablations: "dual" for CROWN, "clean" for clean-gradient gamma.
     gamma_backend: str = "dual"
+    solver_device: str = "cpu"
 
 
 @dataclass
@@ -135,29 +136,26 @@ def certify_sample(
 
     true_class = int(y)
 
-    # affines = sequential_to_dense_affines(model)
-    # input_l, input_u, hidden_bounds, _, _ = collect_socp_bounds(model, x, cfg.epsilon)
-    input_shape = tuple(x.shape[1:])
-
-    # print(f"[SOCP] Input shape: {input_shape}")
-
-    affines = sequential_to_dense_affines(
-        model,
-        input_shape=input_shape,
-    )
-
-    input_l, input_u, hidden_bounds, _, _ = collect_socp_bounds(
-        model,
-        x,
-        cfg.epsilon,
-    )
-    
-    
     verifier = SparseSOCPVerifier(
         solver=cfg.solver,
         verbose=cfg.solver_verbose,
         max_iters=cfg.solver_max_iters,
+        solver_device=cfg.solver_device,
+        device=x.device,
     )
+
+    affines = sequential_to_dense_affines(
+        model,
+        input_shape=tuple(x.shape[1:]),
+        exact_coefficients=cfg.solver_device == "gpu",
+    )
+
+    if cfg.solver_device == "gpu":
+        from SOCP.socp_cuda import collect_cuda_bounds
+
+        input_l, input_u, hidden_bounds = collect_cuda_bounds(affines, x, cfg.epsilon)
+    else:
+        input_l, input_u, hidden_bounds, _, _ = collect_socp_bounds(model, x, cfg.epsilon)
 
     targets = choose_target_classes(model, x, true_class, cfg)
 

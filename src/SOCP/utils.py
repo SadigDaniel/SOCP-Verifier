@@ -142,7 +142,55 @@ def conv2d_to_dense_matrix(
     return A, bias, out_shape  # type: ignore[return-value]
 
 
-def sequential_to_dense_affines(model: nn.Sequential, input_shape: Tuple[int, int, int] = (1, 28, 28)) -> List[DenseAffineLayer]:
+def _conv_affine_from_weights(
+    conv: nn.Conv2d, input_shape: Tuple[int, int, int],
+) -> Tuple[np.ndarray, np.ndarray, Tuple[int, int, int]]:
+    """Read zero-padded convolution coefficients without floating-point inference."""
+    if conv.padding_mode != "zeros":
+        raise ValueError("GPU SOCP supports Conv2d with zero padding only.")
+    channels, height, width = input_shape
+    weight = conv.weight.detach().to(device="cpu", dtype=torch.float64).numpy()
+    out_channels, group_inputs, kernel_h, kernel_w = weight.shape
+    stride_h, stride_w = conv.stride
+    dilation_h, dilation_w = conv.dilation
+    kernel_span_h = dilation_h * (kernel_h - 1)
+    kernel_span_w = dilation_w * (kernel_w - 1)
+    if conv.padding == "same":
+        pad_h, pad_w = kernel_span_h // 2, kernel_span_w // 2
+        total_h, total_w = kernel_span_h, kernel_span_w
+    else:
+        pad_h, pad_w = (0, 0) if conv.padding == "valid" else conv.padding
+        total_h, total_w = 2 * pad_h, 2 * pad_w
+    out_h = (height + total_h - kernel_span_h - 1) // stride_h + 1
+    out_w = (width + total_w - kernel_span_w - 1) // stride_w + 1
+    pixels = out_h * out_w
+    matrix = np.zeros((out_channels * pixels, channels * height * width), dtype=np.float64)
+    out_idx = np.arange(out_channels)
+    in_channels = (out_idx // (out_channels // conv.groups))[:, None] * group_inputs
+    in_channels = in_channels + np.arange(group_inputs)
+    spatial = np.arange(pixels)
+    base_h = spatial // out_w * stride_h - pad_h
+    base_w = spatial % out_w * stride_w - pad_w
+    for kh in range(kernel_h):
+        input_h = base_h + kh * dilation_h
+        for kw in range(kernel_w):
+            input_w = base_w + kw * dilation_w
+            valid = (0 <= input_h) & (input_h < height) & (0 <= input_w) & (input_w < width)
+            rows = out_idx[:, None, None] * pixels + spatial[valid]
+            cols = in_channels[:, :, None] * (height * width) + input_h[valid] * width + input_w[valid]
+            matrix[rows, cols] = weight[:, :, kh, kw, None]
+    bias = np.zeros(out_channels, dtype=np.float64)
+    if conv.bias is not None:
+        bias = conv.bias.detach().to(device="cpu", dtype=torch.float64).numpy()
+    return matrix, np.repeat(bias, pixels), (out_channels, out_h, out_w)
+
+
+def sequential_to_dense_affines(
+    model: nn.Sequential,
+    input_shape: Tuple[int, int, int] = (1, 28, 28),
+    *,
+    exact_coefficients: bool = False,
+) -> List[DenseAffineLayer]:
     """
     Convert the supported MNIST Sequential model into affine matrices.
 
@@ -156,11 +204,22 @@ def sequential_to_dense_affines(model: nn.Sequential, input_shape: Tuple[int, in
     current_shape: Tuple[int, ...] = input_shape
     affines: List[DenseAffineLayer] = []
 
+    if exact_coefficients:
+        stages = [layer for layer in model if layer.__class__.__name__ != "Flatten"]
+        if len(stages) % 2 == 0 or any(
+            not isinstance(layer, nn.ReLU if i % 2 else (nn.Conv2d, nn.Linear))
+            for i, layer in enumerate(stages)
+        ):
+            raise ValueError("GPU SOCP expects alternating affine and ReLU layers ending in logits.")
+
     for idx, layer in enumerate(model):
         if isinstance(layer, nn.Conv2d):
             if len(current_shape) != 3:
                 raise ValueError(f"Conv2d expected 3D activation shape, got {current_shape}")
-            A, b, out_shape = conv2d_to_dense_matrix(layer, current_shape, device=device)  # type: ignore[arg-type]
+            if exact_coefficients:
+                A, b, out_shape = _conv_affine_from_weights(layer, current_shape)
+            else:
+                A, b, out_shape = conv2d_to_dense_matrix(layer, current_shape, device=device)  # type: ignore[arg-type]
             affines.append(DenseAffineLayer(A, b, name=f"conv{idx}"))
             current_shape = out_shape
         elif isinstance(layer, nn.Linear):
