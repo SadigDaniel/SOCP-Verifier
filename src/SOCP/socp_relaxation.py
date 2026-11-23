@@ -24,7 +24,7 @@ import numpy as np
 from SOCP.socp_bounds import LayerBounds, unstable_mask
 from SOCP.utils import DenseAffineLayer
 
-
+rng = np.random.default_rng(42)
 @dataclass
 class CouplingSets:
     """Sparse lifted coupling sets for one hidden layer k."""
@@ -87,10 +87,18 @@ def select_sparse_couplings(
         gamma = np.abs(gammas[k]) if k < len(gammas) else np.ones_like(hb.s_lower)
         u_width = hb.s_upper - hb.s_lower
         unstable = unstable_mask(hb.s_lower, hb.s_upper)
-
-        node_scores = gamma * np.maximum(u_width, 0.0)
-        node_scores = np.where(unstable, node_scores, -np.inf)
-        retained = _topk_indices(node_scores, nodes_per_layer)
+        
+        # only keep 1 or 2 do not have both on 
+        #ranking using Gamma (1) 
+        # node_scores = gamma * np.maximum(u_width, 0.0)
+        # node_scores = np.where(unstable, node_scores, -np.inf)
+        # retained = _topk_indices(node_scores, nodes_per_layer)
+        
+        #Random neurons selection 
+        #2 - random neuron selection 
+        candidates = np.flatnonzero(unstable)
+        count = min(nodes_per_layer, candidates.size)
+        retained = rng.choice(candidates, size=count, replace=False)
 
         prev_width = np.maximum(prev_u - prev_l, 0.0)
         current_u = np.maximum(hb.z_upper, 0.0)
