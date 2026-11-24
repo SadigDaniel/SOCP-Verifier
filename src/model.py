@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class Flatten(nn.Module):
@@ -252,3 +253,76 @@ def build_cnn5_model(
             num_classes,
         ),
     )
+    
+
+class BasicBlock(nn.Module):
+    def __init__(self, in_planes, planes=32, stride=1):
+        super().__init__()
+
+        self.conv1 = nn.Conv2d(
+            in_planes, planes,
+            kernel_size=3, stride=stride, padding=1,
+            bias=True,
+        )
+        self.conv2 = nn.Conv2d(
+            planes, planes,
+            kernel_size=3, stride=1, padding=1,
+            bias=True,
+        )
+
+        self.shortcut = nn.Sequential()
+
+        if stride != 1 or in_planes != planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(
+                    in_planes, planes,
+                    kernel_size=1, stride=stride,
+                    bias=True,
+                )
+            )
+
+    def forward(self, x):
+        out = F.relu(self.conv1(x))
+        out = self.conv2(out)
+        return F.relu(out + self.shortcut(x))
+
+
+class ResNet4b(nn.Module):
+    """CIFAR-10 ResNet-4b with four residual blocks and no batch normalization."""
+
+    def __init__(self):
+        super().__init__()
+
+        # Input: 3 x 32 x 32 -> 16 x 16 x 16
+        self.conv1 = nn.Conv2d(
+            3, 16,
+            kernel_size=3, stride=2, padding=1,
+            bias=True,
+        )
+
+        # 16 x 16 x 16 -> 32 x 8 x 8
+        self.layer1 = nn.Sequential(
+            BasicBlock(16, 32, stride=2),
+            BasicBlock(32, 32, stride=1),
+        )
+
+        # 32 x 8 x 8 -> 32 x 4 x 4
+        self.layer2 = nn.Sequential(
+            BasicBlock(32, 32, stride=2),
+            BasicBlock(32, 32, stride=1),
+        )
+
+        self.linear1 = nn.Linear(32 * 4 * 4, 100)
+        self.linear2 = nn.Linear(100, 10)
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = torch.flatten(x, start_dim=1)
+        x = F.relu(self.linear1(x))
+        return self.linear2(x)
+
+
+def build_resnet4b_model():
+    return ResNet4b()

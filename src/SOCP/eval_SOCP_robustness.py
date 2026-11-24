@@ -8,27 +8,31 @@ from tqdm import tqdm
 
 from SOCP.socp_certificate import CertificateConfig, certify_sample
 from data import get_mnist_loaders, get_cifar10_loaders
-from model import build_mnist_model, build_mnist_tiny_model, build_cnn5_model
+from model import build_mnist_model, build_mnist_tiny_model, build_cnn5_model, build_resnet4b_model
+from SOCP.resnet_adapter import resnet4b_to_sequential
 
 """
         Full SOCP certified robustness evaluation.
         run code:
             python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/tmp_IBP_tiny.pt --model_type tiny --epsilon 0.1 --max_E 8 --max_S 4 --max_T 4 --prev_candidate_limit 16
             python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/eps_0.3/ibp_cnn_standard.pt --model_type cnn --epsilon 0.3 --max_E 8 --max_S 4 --max_T 4 --prev_candidate_limit 32 --gamma_backend dual --max_targets 8
-            
-            nohup python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/eps_0.3/crown_IBP_cnn_standard.pt --model_type cnn --epsilon 0.2\
+            --solver_device gpu\
+            --solver_max_iters 800\
+            nohup python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/eps_0.3/dual_wk_cnn_standard.pt --model_type cnn --epsilon 0.3\
                                                     --linear_size 100 --max_E 16 --max_S 8 --max_T 8\
-                                                    --prev_candidate_limit 32 --gamma_backend dual --max_targets 9\
-                                                    > MNIST_tmp_deeppoly_cnn_train0.1_Val0.15.out 2>&1 &
+                                                    --prev_candidate_limit 256 --gamma_backend dual_WK --max_targets 9\
+                                                    --solver_max_iters 500\
+                                                    > MNIST_dual_wk_cnn_standard_train0.3_Val0.3_CPU_16_test.out 2>&1 &
             
             
             
             python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/cifar10/eps_0.0088889/cifar10_deeppoly_cnn5_standard.pt --model_type cifar10 --epsilon 0.0088889 --n1 24 --n2 48 --n3 96 --linear_size 192 --max_E 8 --max_S 4 --max_T 4 --prev_candidate_limit 16 --gamma_backend dual --max_targets 6
             
-            nohup python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/cifar10/eps_0.0088889/cifar10_deeppoly_cnn5_standard.pt --model_type cifar10 --epsilon 0.0039\
+            nohup python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/cifar10/resnet4b_last.pt --model_type resnet --epsilon 0.0039\
                             --n1 24 --n2 48 --n3 96 --linear_size 192 --max_E 8 --max_S 4 --max_T 4\
-                            --prev_candidate_limit 16 --gamma_backend dual --max_targets 6\
-                            > cifar10_deeppoly_cnn5_standard_eps_0.0039.out 2>&1 &
+                            --model_type resnet \
+                            --prev_candidate_limit 32 --gamma_backend dual --max_targets 9\
+                            > cifar10_resnet4b_last_eps_0.0039_E_0.out 2>&1 &
         Returns
         -------
         dict containing all paper metrics.
@@ -107,6 +111,18 @@ def evaluate_socp_full(
                         cfg=cert_cfg,
                     )
                     last_solve_time = time.perf_counter() - start
+                    
+                    # print(
+                    #     f"\nimage={total} true={yi} certified={cert.certified} "
+                    #     f"worst_margin={cert.worst_margin:+.9e}",
+                    #     flush=True,
+                    # )
+                    # for target, result in cert.margins.items():
+                    #     print(
+                    #         f"  target={target} margin={result.value:+.9e} "
+                    #         f"status={result.status}",
+                    #         flush=True,
+                    #     )
 
                     solve_times.append(last_solve_time)
                     worst_margins.append(float(cert.worst_margin))
@@ -190,7 +206,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--model_type",
-        choices=["cnn", "tiny", "cifar10"],
+        choices=["cnn", "tiny", "cifar10", "resnet"],
         default="tiny",
     )
     parser.add_argument("--n1", type=int, default=16)
@@ -210,7 +226,7 @@ def parse_args() -> argparse.Namespace:
         help="Run on CPU with CVXPY or on CUDA with the PyTorch SOCP solver.",
     )
     parser.add_argument(
-        "--solver", type=str, default="SCS",
+        "--solver", type=str, default="CLARABEL", #SCS
         help="CVXPY solver for CPU mode, such as SCS or CLARABEL.",
     )
     parser.add_argument(
@@ -267,7 +283,7 @@ def main() -> None:
     print(f"Evaluating exactly the first {MAX_TEST_IMAGES} test images.")
 
     
-    if(args.model_type == "cifar10"):
+    if(args.model_type in ("cifar10", "resnet")):
         _, test_loader = get_cifar10_loaders(
                 args.data_dir,
                 batch_size=1,
@@ -294,6 +310,8 @@ def main() -> None:
             linear_size=args.linear_size,
             num_classes=10,
         )
+    elif args.model_type == "resnet":
+        model = build_resnet4b_model()
     else:
         model = build_mnist_model(
             args.n1,
@@ -315,6 +333,8 @@ def main() -> None:
 
     model.load_state_dict(state_dict)
     model.eval()
+    if args.model_type == "resnet":
+        model = resnet4b_to_sequential(model)
     print(f"Loaded checkpoint: {args.checkpoint}")
     #check clean accuracy
     correct = 0
