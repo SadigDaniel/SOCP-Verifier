@@ -185,7 +185,6 @@ def certify_sample(
             max_S=cfg.max_S,
             max_T=cfg.max_T,
             prev_candidate_limit=cfg.prev_candidate_limit,
-            connected_e_candidates=cfg.solver_device == "cpu",
         )
 
         results[target] = verifier.solve_margin(

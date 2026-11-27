@@ -150,17 +150,20 @@ class _MarginProblem:
         self.squares[var] = diagonal
         return diagonal
 
-    def couple(self, a, b):
-        if a == b:
-            return self.square(a)
+    def add_mccormick(self, a, b, lift):
         la, ua = self.lower[a], self.upper[a]
         lb, ub = self.lower[b], self.upper[b]
-        low, high = _product_box(la, ua, lb, ub)
-        lift, = self.variables(low, high)
         self.ineq.row(_up(la * lb), (lift, 1.0), (a, -lb), (b, -la))
         self.ineq.row(_up(ua * ub), (lift, 1.0), (a, -ub), (b, -ua))
         self.ineq.row(_up(-ua * lb), (lift, -1.0), (a, lb), (b, ua))
         self.ineq.row(_up(-la * ub), (lift, -1.0), (a, ub), (b, la))
+
+    def couple(self, a, b):
+        if a == b:
+            return self.square(a)
+        low, high = _product_box(self.lower[a], self.upper[a], self.lower[b], self.upper[b])
+        lift, = self.variables(low, high)
+        self.add_mccormick(a, b, lift)
         da, db = self.square(a), self.square(b)
         self.soc.row(0.0, (da, 1.0), (db, 1.0))
         self.soc.row(0.0, (lift, 2.0))
@@ -171,19 +174,35 @@ class _MarginProblem:
         chosen, lifts = zip(*selected)
         omitted = weight != 0.0
         omitted[list(chosen)] = False
-        previous_lower = np.asarray(self.lower)[previous[omitted]]
-        previous_upper = np.asarray(self.upper)[previous[omitted]]
+        terms = [(self.square(current), 1.0), (current, -bias)]
+        terms.extend((lift, -weight[index]) for index, lift in zip(chosen, lifts))
+        if not np.any(omitted):
+            self.eq.row(0.0, *terms)
+            return
+
+        inputs = previous[omitted]
+        weights = weight[omitted]
+        previous_lower = np.asarray(self.lower)[inputs]
+        previous_upper = np.asarray(self.upper)[inputs]
+
+        # Keep the omitted affine sum explicit so its product with z_j is
+        # linked to the previous activations by the McCormick envelope.
+        affine_weight, affine_bias = weights[None, :], np.zeros(1)
+        sum_lower, sum_upper = _affine_box(
+            affine_weight, affine_bias, previous_lower, previous_upper,
+        )
+        omitted_sum = self.variables(sum_lower, sum_upper)
+        self.eq.affine(omitted_sum, inputs, affine_weight, affine_bias)
+
+        # Retain the previous interval as the box for the residual variable.
         low, high = _product_box(
             previous_lower, previous_upper, self.lower[current], self.upper[current],
         )
-        low, high = _product_box(low, high, weight[omitted], weight[omitted])
+        low, high = _product_box(low, high, weights, weights)
         error = _sum_error(np.maximum(abs(low), abs(high)).sum(), low.size)
-        residual_lower = _down(low.sum() - error)
-        residual_upper = _up(high.sum() + error)
-        terms = [(self.square(current), 1.0), (current, -bias)]
-        terms.extend((lift, -weight[index]) for index, lift in zip(chosen, lifts))
-        self.ineq.row(-residual_lower, *terms)
-        self.ineq.row(residual_upper, *((col, -coef) for col, coef in terms))
+        residual, = self.variables(_down(low.sum() - error), _up(high.sum() + error))
+        self.add_mccormick(omitted_sum[0], current, residual)
+        self.eq.row(0.0, *terms, (residual, -1.0))
 
     def to_solver(self, device, *, allow_cpu=False):
         def float_tensor(data):
