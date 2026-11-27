@@ -26,13 +26,15 @@ from SOCP.resnet_adapter import resnet4b_to_sequential
             
             
             
-            python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/cifar10/eps_0.0088889/cifar10_deeppoly_cnn5_standard.pt --model_type cifar10 --epsilon 0.0088889 --n1 24 --n2 48 --n3 96 --linear_size 192 --max_E 8 --max_S 4 --max_T 4 --prev_candidate_limit 16 --gamma_backend dual --max_targets 6
+            python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/cifar10/eps_0.0088889/cifar10_deeppoly_cnn5_standard.pt --model_type cifar10 --epsilon 0.001 --n1 24 --n2 48 --n3 96 --linear_size 192 --max_E 8 --max_S 4 --max_T 4 --prev_candidate_limit 16 --gamma_backend dual --max_targets 6
             
-            nohup python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/cifar10/resnet4b_last.pt --model_type resnet --epsilon 0.0039\
-                            --n1 24 --n2 48 --n3 96 --linear_size 192 --max_E 8 --max_S 4 --max_T 4\
+            nohup python -m SOCP.eval_SOCP_robustness --checkpoint ../checkpoints/cifar10/resnet4b_last.pt --model_type resnet --epsilon 0.0\
+                            --n1 24 --n2 48 --n3 96 --linear_size 192 --max_E 0 --max_S 0 --max_T 0\
                             --model_type resnet \
-                            --prev_candidate_limit 32 --gamma_backend dual --max_targets 9\
-                            > cifar10_resnet4b_last_eps_0.0039_E_0.out 2>&1 &
+                            --solver_max_iters 800\
+                            --solver_device gpu\
+                            --prev_candidate_limit 128 --gamma_backend dual --max_targets 6\
+                            > cifar10_resnet4b_last_eps_0.00098_E_0_GPU.out 2>&1 &
         Returns
         -------
         dict containing all paper metrics.

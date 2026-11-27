@@ -90,15 +90,15 @@ def select_sparse_couplings(
         
         # only keep 1 or 2 do not have both on 
         #ranking using Gamma (1) 
-        # node_scores = gamma * np.maximum(u_width, 0.0)
-        # node_scores = np.where(unstable, node_scores, -np.inf)
-        # retained = _topk_indices(node_scores, nodes_per_layer)
+        node_scores = gamma * np.maximum(u_width, 0.0)
+        node_scores = np.where(unstable, node_scores, -np.inf)
+        retained = _topk_indices(node_scores, nodes_per_layer)
         
         #Random neurons selection 
         #2 - random neuron selection 
-        candidates = np.flatnonzero(unstable)
-        count = min(nodes_per_layer, candidates.size)
-        retained = rng.choice(candidates, size=count, replace=False)
+        # candidates = np.flatnonzero(unstable)
+        # count = min(nodes_per_layer, candidates.size)
+        # retained = rng.choice(candidates, size=count, replace=False)
 
         prev_width = np.maximum(prev_u - prev_l, 0.0)
         current_u = np.maximum(hb.z_upper, 0.0)
